@@ -36,7 +36,7 @@ runApp()
 
 ========================================================
 
-![screenshot](presentation/assets/img/screenshot.png)
+![screenshot](assets/img/screenshot.png)
 
 References
 ========================================================

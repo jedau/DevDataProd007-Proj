@@ -1,6 +1,6 @@
 library(shiny)
 
-source("predictor.R", local = TRUE)
+source("predictor2.R", local = TRUE)
 
 shinyServer(
     function(input, output){
