@@ -1,0 +1,443 @@
+---
+title: "Titanic Survival Analysis"
+author: "Jed Aureus Gonzales"
+date: "Friday, 21 November, 2014"
+output: pdf_document
+---
+
+# Titanic Survival Analysis
+
+This writeup includes detailed and exploratory data analysis that serves as an accompaniment to the **Shiny** application, *Would you have the voyage of the RMS Titanic?*. This study has been conducted as the course project for Johns Hopkins University's Developing Data Products course in Coursera. The problem was inspired by the Kaggle competition, [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic-gettingStarted).
+
+## Background
+
+[According to its Wikipedia entry](http://en.wikipedia.org/wiki/RMS_Titanic), the RMS Titanic set sail on its maiden voyage from Southampton, UK to New York City, USA on the 11th of April 1912 and met its untimely end on the 15th of April 1912 at 11:40 PM, colliding with an iceberg and killing 1502 out of 2224 passengers and crew.
+
+![titanic_route](http://upload.wikimedia.org/wikipedia/commons/5/51/Titanic_voyage_map.png)
+
+The ship could accomodate 2566 passengers (1034 First Class, 510 Second Class, and 1022 Third Class) and was designed to carry 32 lifeboats. However, cost-cutting measures have reduced the number of lifeboats to 20 (enough for 1180 people) for its maiden voyage. Another likely reason for the removal of the lifeboats was the notion that the RMS Titanic was "unsinkable."
+
+## Assumptions
+
+[The 1912 was a time of progress and great divide](http://en.wikipedia.org/wiki/Progressive_Era); gender, race and social status were cause for most of the segregation. Without looking at the data, it is safe to assume that these notions could factor in to the outcome of the analysis. Considering the [women and children first](http://en.wikipedia.org/wiki/Women_and_children_first) protocol was enacted, it is safe to assume that majority of survivors would have been a woman and/or a child. People of caucasian descent would have a greater chance of survival and people who belong to the upper class would have easier access to the upper floors of the cabins, therefore having easier access to the lifeboats. Taking into account the time of the accident, it is also safe to assume that most of the passengers had likely retired to their cabins.
+
+## Getting and Cleaning the Data
+
+First and foremost, load all the necessary libraries and set the seed to ensure reproducibility.
+
+```{r, message=FALSE}
+library(caret)
+library(Hmisc)
+library(gridExtra)
+```
+
+After loading all the necessary libraries, download the training and testing data from their respective links. Define the [column](variables.txt) and missing types for faster processing.
+
+```{r, message=FALSE}
+if (!file.exists("train.csv")) {
+    download.file(url = "https://www.kaggle.com/c/titanic-gettingStarted/download/train.csv",
+                  destfile = "train.csv",
+                  method = "curl")
+}
+if (!file.exists("test.csv")) {
+    download.file(url = "https://www.kaggle.com/c/titanic-gettingStarted/download/test.csv",
+                  destfile = "test.csv",
+                  method = "curl")
+}
+
+train.colClasses <- c('integer',   # PassengerId
+                        'factor',    # Survived 
+                        'factor',    # Pclass
+                        'character', # Name
+                        'factor',    # Sex
+                        'numeric',   # Age
+                        'integer',   # SibSp
+                        'integer',   # Parch
+                        'character', # Ticket
+                        'numeric',   # Fare
+                        'character', # Cabin
+                        'factor'     # Embarked
+)
+test.colClasses <- train.colClasses[-2]
+
+train.df <- read.csv("train.csv", header = TRUE, 
+                    na.strings = c("NA", ""), colClasses = train.colClasses)
+test.df <- read.csv("test.csv", header = TRUE, 
+                    na.strings = c("NA", ""), colClasses = test.colClasses)
+```
+
+A quick `summary` on `train.df` will verify that `Age` has 177 `NA` values. Further analysis of `Name`, with comparison to `Age`, would suggest that the passengers' "title" [varies with age](http://en.wikipedia.org/wiki/Master_%28form_of_address%29). For this study, the missing `Age` values will be substitued by the average of the "title" they belong to. To aid this process, the creation of a formal `Title` variable in `train.df` is required.
+
+```{r, cache=TRUE}
+title.upper <- regexpr("\\,[A-Z ]{1,20}\\.", train.df$Name, TRUE)
+title.lower <- title.upper + attr(title.upper, "match.length") - 1
+train.df$Title <- substr(train.df$Name, title.upper + 2, title.lower - 1)
+unique(train.df$Title)
+```
+
+Use the `bystats` function from the `Hmisc` package to identify the observations with missing `Age` values and their respective mean and median.
+
+```{r}
+bystats(train.df$Age, train.df$Title, 
+        fun = function(x) c(Mean = mean(x), Median = median(x)))
+```
+
+From the result, it could be noted that the `Title` values `Dr`, `Master`, `Miss`, `Mr` and `Mrs` have missing values. Fill in the missing values by imputing the median for their respective title. Remove the estimates by rounding the `Age` values to `0`.
+
+```{r, cache=TRUE}
+missing.titles <- c("Dr", "Master", "Miss", "Mr", "Mrs")
+for(title in missing.titles) {
+    train.df$Age[which(train.df$Title == title)] <- round(impute(train.df$Age[which(train.df$Title == title)]), 0)
+}
+```
+
+Notice, also, that `Embarked` also has 2 `NA` values. Since most of the passengers had embarked from Southampton (`S`), it is safe to assume that it is where the two passengers embarked there as well.
+
+```{r, cache=TRUE}
+train.df$Embarked[which(is.na(train.df$Embarked))] <- 'S'
+```
+
+As an aside, recall the motion picture *Titanic*, Leonardo diCaprio's character and his friend checked in at the very last minute. One might wonder if their tickets have not been verified as having embarked from Southampton. But, that is a fictional curiosity for some other time.
+
+Perform the same exact procedures for the test data so that there wouldn't be any conflict when predicting later. The same replication of procedures must be done for subsequent changes as well.
+
+```{r, echo=FALSE, message=FALSE, cache=TRUE}
+title.upper <- regexpr("\\,[A-Z ]{1,20}\\.", test.df$Name, TRUE)
+title.lower <- title.upper + attr(title.upper, "match.length") - 1
+test.df$Title <- substr(test.df$Name, title.upper + 2, title.lower - 1)
+missing.titles <- c("Master", "Miss", "Mr", "Mrs", "Ms")
+for(title in missing.titles) {
+    if(title == "Ms")
+        test.df$Age[which(test.df$Title == title)] <- median(test.df$Age[which(test.df$Title == "Mrs")])
+    else
+        test.df$Age[which(test.df$Title == title)] <- round(impute(test.df$Age[which(test.df$Title == title)]), 0)
+}
+```
+
+Now that the `NA` values have been removed and the data set, exploratory data analysis could now be conducted.
+
+## Exploratory Data Analysis
+
+Before features could be selected for predictions, exploratory data analysis should first be conducted on the training set. If necessary, additional features would be created by the end of this section for better prediction.
+
+First, test the earlier assumptions on the processed data. For the process of elimination, the `Survived` variable will be used as the outcome since it is the only variable missing in the test data.
+
+Plotting `Pclass` against `Survived` yields the following table (Passenger class corresponds to first (`1`), second (`2`) and third (`3`), `0` if did **not** survive): 
+
+```{r, echo=FALSE}
+tbl.SurvivedClass <- table(train.df$Survived, train.df$Pclass)
+
+qplot(1:10, 1:10, geom = "blank") + theme_bw() +
+theme(line = element_blank(), text = element_blank()) +
+annotation_custom(grob = tableGrob(tbl.SurvivedClass, 
+    gpar.coltext = gpar(cex = 1.2), gpar.rowtext = gpar(cex = 1.2)),
+    xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf)
+
+```
+
+Even though the percentage of third class passenger is the lowest, the number of third class passengers who survived outnumbered that of the second class passengers. This is a very interesting feature, considering the class segregation at the time.
+
+Plotting `Sex` against `Survived` yields the following table: 
+
+```{r, echo=FALSE}
+tbl.SurvivedSex <- table(train.df$Survived, train.df$Sex)
+
+qplot(1:10, 1:10, geom = "blank") + theme_bw() +
+theme(line = element_blank(), text = element_blank()) +
+annotation_custom(grob = tableGrob(tbl.SurvivedSex, 
+    gpar.coltext = gpar(cex = 1.2), gpar.rowtext = gpar(cex = 1.2)),
+    xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf)
+
+```
+
+Based from the table, the earlier assumption of *women first* could already be confirmed. Later on, `Age` and `Sex` will be factored together. Before that, look at the table produced by the `Age` against `Survived`.
+
+This is where it gets tricky to visualize. An important aspect of the `Age` variable is that it could be subdivided further into factors. Taking `Title` into consideration, it could be observed that passengers up to the age of `12` is considered as a child. Taking `Parch` into consideration, passengers could further be classified as a parent. Blanket the considerations to a variable `PAC`, [based on Transactional analysis](http://en.wikipedia.org/wiki/Transactional_analysis).
+
+```{r, message=FALSE}
+train.df$PAC <- ifelse(train.df$Age <= 12, "C", ifelse(train.df$Parch > 0, "P", "A"))
+test.df$PAC <- ifelse(test.df$Age <= 12, "C", ifelse(train.df$Parch > 0, "P", "A"))
+```
+
+```{r, echo=FALSE}
+tbl.SurvivedPAC <- table(train.df$Survived, train.df$PAC)
+
+qplot(1:10, 1:10, geom = "blank") + theme_bw() +
+theme(line = element_blank(), text = element_blank()) +
+annotation_custom(grob = tableGrob(tbl.SurvivedPAC, 
+    gpar.coltext = gpar(cex = 1.2), gpar.rowtext = gpar(cex = 1.2)),
+    xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf)
+
+```
+
+Based on the table, being a child (`C`) did not ensure survival. The uneven number of parents (`P`) and children could also mean that some passengers were parents of adults (`A`).
+
+Plotting `Embarked` against `Survived` yields the following table:
+
+```{r, echo=FALSE}
+tbl.SurvivedEmbarked <- table(train.df$Survived, train.df$Embarked)
+
+qplot(1:10, 1:10, geom = "blank") + theme_bw() +
+theme(line = element_blank(), text = element_blank()) +
+annotation_custom(grob = tableGrob(tbl.SurvivedEmbarked, 
+    gpar.coltext = gpar(cex = 1.2), gpar.rowtext = gpar(cex = 1.2)),
+    xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf)
+
+```
+
+The `Embarked` variable doesn't really show much variance but will still be considered for feature selection.
+
+The other variables, which mostly had the string data type, will most likely not be used for fitting the model.
+
+## Model Fitting
+
+Split the training set further into training (60%) and validation sets (40%), using `Survived` as the outcome. Remove the variables `PassengerId`, `Name`, `Ticket`, `Fare`, `Cabin` and `Title` as they have been analyzed as superficial.
+
+```{r}
+set.seed(1337)
+features <- c("Survived", "Pclass", "Sex", "Age", "SibSp", "Parch", "Embarked", "PAC")
+data <- train.df[features]
+inTrain <- createDataPartition(data$Survived, p=.60, list=FALSE)
+training <- data[inTrain,]
+validation <- data[-inTrain,]
+rownames(training) <- NULL
+rownames(validation) <- NULL
+```
+
+Fit the data into different models to see which one yields the most accuracy.
+
+Using `glm` with all the remaining features:
+
+```{r, cache=TRUE}
+model.glm.1 <- train(Survived ~ ., family = binomial, 
+                     data = training, method = "glm")
+summary(model.glm.1)
+```
+
+Notice that `Pclass` and `Sex` had the most significant influence, which gives credence to the earlier assumption about social class and gender. `Age` and `SibSp` follows closely, the former supporting the child hypothesis and the latter emerging somewhat as a surprising feature. The newly created `PAC` follows close behind. `Embarked` and `Parch` scored the lowest and can either be dropped or modified.
+
+Modify the predictors to fit earlier assumptions and test it on `glm`, continue until the fit is optimal:
+
+```{r, cache=TRUE}
+model.glm.2 <- train(Survived ~ Pclass + SibSp + I(PAC == "C")
+                   + I(Sex == "male") + I(Sex == "female" & Parch > 0)
+                   + I(Embarked == "S"), 
+                   family = binomial, data = training, method = "glm")
+summary(model.glm.2)
+```
+
+```{r, cache=TRUE, warning=FALSE}
+model.glm.3 <- train(Survived ~ Pclass * Sex + SibSp + I(PAC == "C")
+                   + I(Sex == "male") * Parch,
+                   family = binomial, data = training, method = "glm")
+```
+
+```{r}
+summary(model.glm.3)
+```
+
+```{r, cache=TRUE}
+model.glm.4 <- train(Survived ~ Pclass * Sex + I(PAC == "C"),
+                   family = binomial, data = training, method = "glm")
+summary(model.glm.4)
+```
+
+Test the performance of different algorithms. The next models will be fitted against Linear Discriminant Analysis, SVM, Ada boost and, finally, Random Forest.
+
+```{r, cache=TRUE}
+model.lda <- train(Survived ~ ., data = training, method = "lda")
+model.lda
+```
+
+```{r, cache=TRUE,warning=FALSE}
+library(kernlab)
+model.svm <- train(Survived ~ ., data = training, method = "svmRadial")
+```
+
+```{r}
+model.svm
+```
+
+```{r, cache=TRUE, warning=FALSE}
+model.ada <- train(Survived ~ ., data = training, method = "ada")
+```
+
+```{r}
+model.ada
+```
+
+```{r, cache=TRUE}
+rf.grid <- data.frame(.mtry = c(2, 3))
+model.rf <- train(Survived ~ ., data = training, method = "rf")
+model.rf
+```
+
+```{r, cache=TRUE}
+model.rf.2 <- train(Survived ~ Pclass + SibSp + I(PAC == "C")
+                   + I(Sex == "male") + I(Sex == "female" & Parch > 0)
+                   + I(Embarked == "S"), data = training, method = "rf")
+model.rf.2
+```
+
+## Model Evaluation
+
+Cross-validate the validation set with the fitted models.
+
+Measure the accuracy of `model.glm.1`:
+
+```{r}
+confusionMatrix(validation$Survived, predict(model.glm.1, validation))
+```
+
+`model.glm.1` yielded an Accuracy of `0.7915` and a Kappa of `0.599`.
+
+Measure the accuracy of `model.glm.2`:
+
+```{r}
+confusionMatrix(validation$Survived, predict(model.glm.2, validation))
+```
+
+`model.glm.2` yielded an Accuracy of `0.831` and a Kappa of `0.6343`, an improvement over the previous iteration.
+
+Measure the accuracy of `model.glm.3`:
+
+```{r}
+confusionMatrix(validation$Survived, predict(model.glm.3, validation))
+```
+
+`model.glm.3` yielded an Accuracy of `0.8141` and a Kappa of `0.5895`.
+
+Measure the accuracy of `model.glm.4`:
+
+```{r}
+confusionMatrix(validation$Survived, predict(model.glm.4, validation))
+```
+
+`model.glm.4` yielded an Accuracy of `0.7831` and a Kappa of `0.5015`.
+
+Measure the accuracy of `model.lda`:
+
+```{r}
+confusionMatrix(validation$Survived, predict(model.lda, validation))
+```
+
+`model.lda` yielded an Accuracy of `0.8169` and a Kappa of `0.6088`.
+
+Measure the accuracy of `model.ada`:
+
+```{r}
+confusionMatrix(validation$Survived, predict(model.ada, validation))
+```
+
+`model.ada` yielded an Accuracy of `0.8394` and a Kappa of `0.656`. Currently the most accurate algorithm.
+
+Measure the accuracy of `model.svm`:
+
+```{r}
+confusionMatrix(validation$Survived, predict(model.svm, validation))
+```
+
+`model.svm` yielded an Accuracy of `0.8394` and a Kappa of `0.647`. Almost the same as `model.ada`.
+
+Measure the accuracy of `model.rf`:
+
+```{r}
+confusionMatrix(validation$Survived, predict(model.rf, validation))
+```
+
+`model.rf` yielded an Accuracy of `0.8451` and a Kappa of `0.6574`. More accurate than both `model.svm` and `model.ada`.
+
+Measure the accuracy of `model.rf.2`:
+
+```{r}
+confusionMatrix(validation$Survived, predict(model.rf.2, validation))
+```
+
+`model.rf.2` yielded an Accuracy of `0.8535` and a Kappa of `0.6756`. This model is a modification of `model.rf` and `model.glm.2`.
+
+Compare the algorithms with each other to arrive with a more definitive conclusion.
+
+```{r, cache=TRUE}
+GLM1 <- predict(model.glm.1, test.df)
+GLM2 <- predict(model.glm.2, test.df)
+GLM3 <- predict(model.glm.3, test.df)
+GLM4 <- predict(model.glm.4, test.df)
+LDA <- predict(model.lda, test.df)
+ADA <- predict(model.ada, test.df)
+SVM <- predict(model.svm, test.df)
+RF <- predict(model.rf, test.df)
+RF2 <- predict(model.rf.2, test.df)
+```
+
+GLM1 vs GLM2:
+```{r}
+table(GLM1, GLM2)
+```
+
+GLM1 vs GLM3:
+```{r}
+table(GLM1, GLM3)
+```
+
+GLM1 vs GLM4:
+```{r}
+table(GLM1, GLM4)
+```
+
+GLM2 vs GLM3:
+```{r}
+table(GLM2, GLM3)
+```
+
+GLM3 vs GLM4:
+```{r}
+table(GLM3, GLM4)
+```
+
+LDA vs ADA:
+```{r}
+table(LDA, ADA)
+```
+
+SVM vs RF:
+```{r}
+table(SVM, RF)
+```
+
+RF vs RF2:
+```{r}
+table(RF, RF2)
+```
+
+## Submitting to Kaggle
+
+Format the output according to the required output for the competition. For the purpose of further comparison, `GLM2`, `ADA`, `SVM` and `RF` will be submitted.
+
+```{r}
+kaggle.submit <- function(model) {
+    results <- vector()
+    filename <- paste(deparse(substitute(model)), ".csv", sep = "")
+    for(i in 1:length(model)) {
+        results[i] <- model[i]
+    }
+    results <- gsub(1, 0, results)
+    results <- gsub(2, 1, results)
+    file.submit <- cbind(test.df$PassengerId, results)
+    colnames(file.submit) <- c("PassengerId", "Survived")
+    write.csv(file.submit, file = filename, row.names = FALSE)
+}
+```
+
+```{r, echo=FALSE}
+kaggle.submit(GLM2)
+kaggle.submit(ADA)
+kaggle.submit(SVM)
+kaggle.submit(RF)
+kaggle.submit(RF2)
+```
+
+As of writing, [GLM2](models/GLM2.csv) scored **0.76555**, [ADA](models/ADA.csv) scored **0.76077**, [SVM](models/SVM.csv) scored **0.78947**, [RF](models/RF.csv) scored **0.79426** and the modified [RF2](models/RF2.csv) scored **0.77990**.
+
+## Conclusion
+
+Overall, 3 out of 5 models fitted fared better than the *Gender, Price and Class Based Model* benchmark but ultimately wasn't that remarkable. Further modifications could still be done, with the *random forest* algorithm showing the most promise.
